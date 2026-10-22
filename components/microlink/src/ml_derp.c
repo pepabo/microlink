@@ -107,7 +107,7 @@ static int ml_derp_bio_send(void *ctx, const unsigned char *buf, size_t len) {
  * Common cleanup for failure paths in ml_derp_connect() after TLS init.
  *
  * Previously we only closed the socket and never freed the mbedTLS
- * contexts, leaking entropy/ctr_drbg/ssl_conf on every connection failure,
+ * contexts, leaking ssl_conf on every connection failure,
  * and — for failures after a successful ssl_setup — the ~20KB TLS I/O
  * buffers as well (internal RAM, since CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y).
  * Combined with infinite retries, internal RAM shrank monotonically,
@@ -120,8 +120,6 @@ static int ml_derp_bio_send(void *ctx, const unsigned char *buf, size_t len) {
 static void derp_tls_abort(microlink_t *ml, int sock) {
     mbedtls_ssl_free(&ml->derp.ssl);
     mbedtls_ssl_config_free(&ml->derp.ssl_conf);
-    mbedtls_ctr_drbg_free(&ml->derp.ctr_drbg);
-    mbedtls_entropy_free(&ml->derp.entropy);
     if (sock >= 0) {
         ml_close_sock(sock);
     }
@@ -770,8 +768,6 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
     /* TLS setup */
     mbedtls_ssl_init(&ml->derp.ssl);
     mbedtls_ssl_config_init(&ml->derp.ssl_conf);
-    mbedtls_entropy_init(&ml->derp.entropy);
-    mbedtls_ctr_drbg_init(&ml->derp.ctr_drbg);
 
     /* Always check the return values of the mbedTLS setup functions and
      * abort immediately on failure instead of proceeding to the handshake.
@@ -781,14 +777,6 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
      * MBEDTLS_ERR_SSL_BAD_INPUT_DATA — misreported as "Bad input
      * parameters" when the real cause is out-of-memory. */
     int cfg_ret;
-    cfg_ret = mbedtls_ctr_drbg_seed(&ml->derp.ctr_drbg, mbedtls_entropy_func,
-                           &ml->derp.entropy, NULL, 0);
-    if (cfg_ret != 0) {
-        ESP_LOGE(TAG, "ctr_drbg_seed failed: -0x%04x", -cfg_ret);
-        derp_tls_abort(ml, sock);
-        return ESP_FAIL;
-    }
-
     cfg_ret = mbedtls_ssl_config_defaults(&ml->derp.ssl_conf,
                                  MBEDTLS_SSL_IS_CLIENT,
                                  MBEDTLS_SSL_TRANSPORT_STREAM,
@@ -799,7 +787,6 @@ esp_err_t ml_derp_connect(microlink_t *ml) {
         return ESP_FAIL;
     }
     mbedtls_ssl_conf_authmode(&ml->derp.ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
-    mbedtls_ssl_conf_rng(&ml->derp.ssl_conf, mbedtls_ctr_drbg_random, &ml->derp.ctr_drbg);
     /* Pin the DERP connection to TLS 1.2. When the DERP relay uses a
      * Let's Encrypt ECDSA certificate, the ESP-IDF mbedTLS TLS 1.3 path
      * cannot interpret the certificate's signature algorithm OID and fails
@@ -1117,8 +1104,6 @@ void ml_derp_disconnect(microlink_t *ml) {
         mbedtls_ssl_close_notify(&ml->derp.ssl);
         mbedtls_ssl_free(&ml->derp.ssl);
         mbedtls_ssl_config_free(&ml->derp.ssl_conf);
-        mbedtls_ctr_drbg_free(&ml->derp.ctr_drbg);
-        mbedtls_entropy_free(&ml->derp.entropy);
         ml_close_sock(ml->derp.sockfd);
         ml->derp.sockfd = -1;
     }
